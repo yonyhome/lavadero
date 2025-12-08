@@ -1,7 +1,7 @@
 /**
  * Trigger: Se ejecuta cuando una orden cambia a estado "completed"
  * Responsabilidades:
- * - Incrementar órdenes completadas del usuario
+ * - Incrementar órdenes completadas del usuario (SOLO si pagó)
  * - Calcular y asignar lavado gratis si aplica
  * - Actualizar estadísticas del trabajador
  * - Enviar notificaciones
@@ -31,7 +31,7 @@ exports.onOrderComplete = functions.firestore
       }
       
       console.log(`✅ Orden completada: ${orderId}`);
-      console.log("Datos de la orden:", afterData);
+      console.log("Método de pago:", afterData.paymentMethod);
       
       try {
         const userId = afterData.userId;
@@ -40,6 +40,9 @@ exports.onOrderComplete = functions.firestore
         // Obtener configuración de la app
         const settings = await getAppSettings();
         const washesRequired = settings.promotions?.washesRequiredForFree || 6;
+        
+        // ✅ CORRECCIÓN: Verificar si es redención de lavado gratis
+        const isRedeemingFreeWash = afterData.paymentMethod === "redeemed";
         
         // 1. Actualizar estadísticas del usuario en una transacción
         const userRef = db.collection("users").doc(userId);
@@ -53,21 +56,30 @@ exports.onOrderComplete = functions.firestore
           
           const userData = userDoc.data();
           const currentCompleted = userData.stats?.completedOrders || 0;
-          const newCompleted = currentCompleted + 1;
           
-          // Determinar si ganó lavado gratis
-          // IMPORTANTE: Solo si NO es una redención de lavado gratis
+          // ✅ IMPORTANTE: Solo incrementar si NO es redención
+          let newCompleted = currentCompleted;
           let earnedFreeWash = false;
           
-          if (afterData.paymentMethod !== "redeemed") {
+          if (!isRedeemingFreeWash) {
+            // Es un pago normal, incrementar contador
+            newCompleted = currentCompleted + 1;
             earnedFreeWash = shouldGetFreeWash(newCompleted, washesRequired);
+            console.log(`💰 Orden pagada - incrementando completedOrders: ${currentCompleted} → ${newCompleted}`);
+          } else {
+            // Es redención de lavado gratis, NO incrementar
+            console.log(`🎁 Lavado gratis redimido - NO incrementar completedOrders (mantiene: ${currentCompleted})`);
           }
           
           const updates = {
-            "stats.completedOrders": admin.firestore.FieldValue.increment(1),
             "stats.lastVisit": admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           };
+          
+          // ✅ Solo incrementar completedOrders si NO es redención
+          if (!isRedeemingFreeWash) {
+            updates["stats.completedOrders"] = admin.firestore.FieldValue.increment(1);
+          }
           
           // Si ganó lavado gratis, incrementar contador
           if (earnedFreeWash) {
@@ -78,9 +90,13 @@ exports.onOrderComplete = functions.firestore
           
           transaction.update(userRef, updates);
           
-          return {earnedFreeWash, newCompleted};
+          return {earnedFreeWash, newCompleted, isRedeemingFreeWash};
         }).then(async (result) => {
-          console.log(`📊 Usuario ${userId}: ${result.newCompleted} lavados completados`);
+          if (result.isRedeemingFreeWash) {
+            console.log(`✅ Usuario ${userId}: Lavado gratis redimido (completedOrders sin cambios)`);
+          } else {
+            console.log(`✅ Usuario ${userId}: ${result.newCompleted} lavados completados (pagados)`);
+          }
           
           // 2. Enviar notificación de orden completada
           if (settings.notifications?.orderCompleted) {
