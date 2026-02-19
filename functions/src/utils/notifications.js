@@ -64,6 +64,9 @@ async function sendToUser(userId, title, body, data = {}) {
           badge: "/logo192.png",
           vibrate: [200, 100, 200],
         },
+        fcmOptions: {
+          link: "/order", // Al hacer click en la notificación, lleva a la orden activa
+        },
       },
     };
     
@@ -264,6 +267,27 @@ async function notifyInactiveUser(userId, daysSinceLastVisit) {
 }
 
 /**
+ * Notificación cuando se asigna un trabajador (orden → in_progress)
+ * @param {string} userId - ID del usuario (placa)
+ * @param {Object} order - Datos de la orden
+ * @returns {Promise<Object>}
+ */
+async function notifyOrderInProgress(userId, order) {
+  const workerName = order.worker?.name || "nuestro equipo";
+  const title = "¡Tu moto está siendo lavada! 🏍️";
+  const body = `${workerName} ya comenzó con tu ${order.service?.name || "servicio"}.`;
+
+  const data = {
+    type: "order_in_progress",
+    orderId: order.id || "",
+    workerName,
+    serviceName: order.service?.name || "",
+  };
+
+  return await sendToUser(userId, title, body, data);
+}
+
+/**
  * Notificación personalizada del administrador
  * @param {Array<string>|string} target - "all" o array de userIds
  * @param {string} title - Título
@@ -287,12 +311,67 @@ async function notifyCustom(target, title, body, data = {}) {
   }
 }
 
+/**
+ * Notificación a todos los administradores cuando llega una nueva orden.
+ * Lee los FCM tokens de la colección "admins" (campo fcmTokens: string[]).
+ * @param {Object} order - Datos de la orden recién creada (incluye .id)
+ * @returns {Promise<void>}
+ */
+async function notifyAdminNewOrder(order) {
+  try {
+    const adminsSnap = await db.collection("admins").get();
+    if (adminsSnap.empty) return;
+
+    const tokens = [];
+    adminsSnap.forEach((doc) => {
+      const data = doc.data();
+      if (Array.isArray(data.fcmTokens)) {
+        tokens.push(...data.fcmTokens.filter(Boolean));
+      }
+    });
+
+    if (tokens.length === 0) return;
+
+    const title = "🛵 Nueva orden recibida";
+    const body = `${order.userId} solicitó ${order.service?.name || "un servicio"}.`;
+
+    const messages = tokens.map((token) => ({
+      notification: { title, body },
+      data: {
+        type: "new_order",
+        orderId: order.id || "",
+        userId: order.userId || "",
+        serviceName: order.service?.name || "",
+        timestamp: new Date().toISOString(),
+      },
+      token,
+      android: { priority: "high", notification: { sound: "default", color: "#0ea5e9" } },
+      apns: { payload: { aps: { sound: "default", badge: 1 } } },
+      webpush: {
+        notification: { icon: "/logo192.png", badge: "/logo192.png", vibrate: [200, 100, 200] },
+        fcmOptions: { link: "/admin/dashboard" },
+      },
+    }));
+
+    const results = await Promise.allSettled(
+        messages.map((msg) => admin.messaging().send(msg))
+    );
+
+    const sent = results.filter((r) => r.status === "fulfilled").length;
+    console.log(`✅ Notificación nueva orden enviada a ${sent}/${tokens.length} admins`);
+  } catch (error) {
+    console.error("❌ Error notificando a admins:", error);
+  }
+}
+
 module.exports = {
   sendToUser,
   sendToMultipleUsers,
   sendBroadcast,
   sendConditional,
   notifyOrderCompleted,
+  notifyOrderInProgress,
+  notifyAdminNewOrder,
   notifyFreeWashEarned,
   notifyInactiveUser,
   notifyCustom,

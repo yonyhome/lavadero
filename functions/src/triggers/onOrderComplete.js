@@ -13,6 +13,7 @@ const {shouldGetFreeWash} = require("../utils/calculations");
 const {getAppSettings} = require("../utils/validators");
 const {
   notifyOrderCompleted,
+  notifyOrderInProgress,
   notifyFreeWashEarned,
 } = require("../utils/notifications");
 
@@ -24,7 +25,17 @@ exports.onOrderComplete = functions.firestore
       const orderId = context.params.orderId;
       const beforeData = change.before.data();
       const afterData = change.after.data();
-      
+
+      // Notificar al usuario cuando el trabajador es asignado (→ in_progress)
+      if (beforeData.status !== "in_progress" && afterData.status === "in_progress") {
+        console.log(`🔧 Orden en progreso: ${orderId}`);
+        try {
+          await notifyOrderInProgress(afterData.userId, { id: orderId, ...afterData });
+        } catch (err) {
+          console.error(`❌ Error notificando in_progress a ${afterData.userId}:`, err);
+        }
+      }
+
       // Solo procesar si el status cambió a "completed"
       if (beforeData.status === "completed" || afterData.status !== "completed") {
         return null;

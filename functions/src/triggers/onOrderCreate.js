@@ -9,6 +9,7 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const {getActiveOrder, hasFreeWashesAvailable} = require("../utils/validators");
+const {notifyAdminNewOrder} = require("../utils/notifications");
 
 const db = admin.firestore();
 
@@ -79,6 +80,10 @@ exports.onOrderCreate = functions.firestore
         });
         
         console.log(`📊 Estadísticas actualizadas para usuario ${order.userId}`);
+
+        // 4. Notificar al admin que llegó una nueva orden
+        await notifyAdminNewOrder({ id: orderId, ...order });
+
         console.log(`✅ Orden ${orderId} procesada correctamente`);
       } catch (error) {
         console.error(`❌ Error procesando orden ${orderId}:`, error);
